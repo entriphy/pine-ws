@@ -14,82 +14,6 @@ macro_rules! error_exit {
     };
 }
 
-#[repr(u8)]
-#[derive(Deserialize)]
-#[serde(remote = "PINECommand", tag = "command")]
-enum PINECommandDef {
-    MsgRead8 { mem: u32 },
-    MsgRead16 { mem: u32 },
-    MsgRead32 { mem: u32 },
-    MsgRead64 { mem: u32 },
-    MsgWrite8 { mem: u32, val: u8 },
-    MsgWrite16 { mem: u32, val: u16 },
-    MsgWrite32 { mem: u32, val: u32 },
-    MsgWrite64 { mem: u32, val: u64 },
-    MsgVersion,
-    MsgSaveState { sta: u8 },
-    MsgLoadState { sta: u8 },
-    MsgTitle,
-    MsgID,
-    MsgUUID,
-    MsgGameVersion,
-    MsgStatus,
-    MsgUnimplemented
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(remote = "PINEStatus")]
-enum PINEStatusDef {
-    Running,
-    Paused,
-    Shutdown,
-    Unknown
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(remote = "PINEResponse", tag = "command")]
-enum PINEResponseDef {
-    ResRead8 { val: u8 },
-    ResRead16 { val: u16 },
-    ResRead32 { val: u32 },
-    ResRead64 { val: u64 },
-    ResWrite8,
-    ResWrite16,
-    ResWrite32,
-    ResWrite64,
-    ResVersion { version: String },
-    ResSaveState,
-    ResLoadState,
-    ResTitle { title: String },
-    ResID { id: String },
-    ResUUID { uuid: String },
-    ResGameVersion { version: String },
-    ResStatus { #[serde(with = "PINEStatusDef")] status: PINEStatus },
-    ResUnimplemented
-}
-
-#[derive(Serialize)]
-struct WSErrorResponse {
-    error: String
-}
-
-#[derive(Serialize)]
-struct WSResponse {
-    #[serde(serialize_with = "serialize_vec_response")]
-    res: Vec<PINEResponse>
-}
-
-#[serde_as]
-#[derive(Deserialize)]
-#[serde(tag = "command")]
-enum WSRequest {
-    #[serde(rename = "execute_batch")]
-    ExecuteBatch { #[serde(deserialize_with = "deserialize_vec_command")] batch: Vec<PINECommand> },
-    
-    #[serde(rename = "write_buffer")]
-    WriteBuffer { address: u32, #[serde_as(as = "Base64")] buffer: Vec<u8> }
-}
-
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -172,28 +96,39 @@ fn main() {
                         Message::Text(match serde_json::from_str::<WSRequest>(&text) {
                             Err(err) => format!("Failed to parse command: {err}"),
                             Ok(req) => match req {
-                                WSRequest::ExecuteBatch { batch } => {
+                                WSRequest::ExecuteCommand { cmd } => {
                                     let mut pine_batch = PINEBatch::new();
-                                    for command in batch {
-                                        pine_batch.add(command);
+                                    pine_batch.add(cmd);
+
+                                    let mut pine = clone.lock().unwrap();
+                                    match pine.send(&mut pine_batch) {
+                                        Err(err) => serde_json::to_string(&WSErrorResponse { error: format!("Failed to send command: {err}") }).unwrap(),
+                                        Ok(res) => match res {
+                                            PINEResult::Fail => serde_json::to_string(&WSErrorResponse { error: format!("Command returned failure code") }).unwrap(),
+                                            PINEResult::Ok(mut res) => serde_json::to_string(&WSResponse { res: res.pop().unwrap() }).unwrap(),
+                                        },
                                     }
-    
+                                }
+
+                                WSRequest::ExecuteBatch { batch } => {
+                                    let mut pine_batch = PINEBatch::from_iter(batch);
+
                                     let mut pine = clone.lock().unwrap();
                                     let res = pine.send(&mut pine_batch);
                                     match res {
                                         Err(err) => serde_json::to_string(&WSErrorResponse { error: format!("Failed to send command: {err}") }).unwrap(),
                                         Ok(res) => match res {
                                             PINEResult::Fail => serde_json::to_string(&WSErrorResponse { error: format!("Command returned failure code") }).unwrap(),
-                                            PINEResult::Ok(res) => serde_json::to_string(&WSResponse { res: res}).unwrap(),
+                                            PINEResult::Ok(res) => serde_json::to_string(&WSBatchResponse { res: res}).unwrap(),
                                         },
                                     }
                                 }
+
                                 WSRequest::WriteBuffer { address, buffer } => {
                                     let mut batch = PINEBatch::new();
                                     let len = buffer.len();
                                     let mut reader = Cursor::new(buffer);
                                     let mut buf: [u8; 8] = [0; 8];
-                                    
                                     for i in (0..len).step_by(8) {
                                         let _ = reader.read_exact(&mut buf);
                                         let val = u64::from_le_bytes(buf);
@@ -206,12 +141,11 @@ fn main() {
                                         Err(err) => serde_json::to_string(&WSErrorResponse { error: format!("Failed to send command: {err}") }).unwrap(),
                                         Ok(res) => match res {
                                             PINEResult::Fail => serde_json::to_string(&WSErrorResponse { error: format!("Command returned failure code") }).unwrap(),
-                                            PINEResult::Ok(res) => serde_json::to_string(&WSResponse { res: res }).unwrap(),
+                                            PINEResult::Ok(res) => serde_json::to_string(&WSBatchResponse { res: res }).unwrap(),
                                         },
                                     }
                                 }
                             },
-                            
                         })
                     },
 
@@ -245,6 +179,92 @@ fn main() {
             }
         });
     }
+}
+
+#[repr(u8)]
+#[derive(Deserialize)]
+#[serde(remote = "PINECommand", tag = "command")]
+enum PINECommandDef {
+    MsgRead8 { mem: u32 },
+    MsgRead16 { mem: u32 },
+    MsgRead32 { mem: u32 },
+    MsgRead64 { mem: u32 },
+    MsgWrite8 { mem: u32, val: u8 },
+    MsgWrite16 { mem: u32, val: u16 },
+    MsgWrite32 { mem: u32, val: u32 },
+    MsgWrite64 { mem: u32, val: u64 },
+    MsgVersion,
+    MsgSaveState { sta: u8 },
+    MsgLoadState { sta: u8 },
+    MsgTitle,
+    MsgID,
+    MsgUUID,
+    MsgGameVersion,
+    MsgStatus,
+    MsgUnimplemented
+}
+
+#[repr(u32)]
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "PINEStatus")]
+enum PINEStatusDef {
+    Running,
+    Paused,
+    Shutdown,
+    Unknown
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "PINEResponse", tag = "command")]
+enum PINEResponseDef {
+    ResRead8 { val: u8 },
+    ResRead16 { val: u16 },
+    ResRead32 { val: u32 },
+    ResRead64 { val: u64 },
+    ResWrite8,
+    ResWrite16,
+    ResWrite32,
+    ResWrite64,
+    ResVersion { version: String },
+    ResSaveState,
+    ResLoadState,
+    ResTitle { title: String },
+    ResID { id: String },
+    ResUUID { uuid: String },
+    ResGameVersion { version: String },
+    ResStatus { #[serde(with = "PINEStatusDef")] status: PINEStatus },
+    ResUnimplemented
+}
+
+#[derive(Serialize)]
+struct WSResponse {
+    #[serde(with = "PINEResponseDef")]
+    res: PINEResponse
+}
+
+#[derive(Serialize)]
+struct WSBatchResponse {
+    #[serde(serialize_with = "serialize_vec_response")]
+    res: Vec<PINEResponse>
+}
+
+#[derive(Serialize)]
+struct WSErrorResponse {
+    error: String
+}
+
+#[serde_as]
+#[derive(Deserialize)]
+#[serde(tag = "command")]
+enum WSRequest {
+    #[serde(rename = "execute_command")]
+    ExecuteCommand { #[serde(with = "PINECommandDef")] cmd: PINECommand },
+
+    #[serde(rename = "execute_batch")]
+    ExecuteBatch { #[serde(deserialize_with = "deserialize_vec_command")] batch: Vec<PINECommand> },
+    
+    #[serde(rename = "write_buffer")]
+    WriteBuffer { address: u32, #[serde_as(as = "Base64")] buffer: Vec<u8> }
 }
 
 fn deserialize_vec_command<'de, D>(deserializer: D) -> Result<Vec<PINECommand>, D::Error> where D: Deserializer<'de> {
