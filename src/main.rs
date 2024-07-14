@@ -4,6 +4,9 @@ use pine_ipc::*;
 use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{base64::Base64, serde_as};
 use tungstenite::{accept_hdr, handshake::server::{ErrorResponse, Request, Response}, Message};
+mod version {
+    include!(concat!(env!("OUT_DIR"), "/version.rs"));
+}
 
 macro_rules! error_exit {
     ($msg:expr) => {
@@ -31,6 +34,8 @@ struct Args {
 }
 
 fn main() {
+    println!("pine-ws (commit {})", version::short_sha());
+
     // Parse args
     let args = Args::parse();
     let slot = match args.slot {
