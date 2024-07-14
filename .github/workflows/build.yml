@@ -1,0 +1,43 @@
+name: Build
+on: push
+
+jobs:
+    build:
+      name: Build ${{ matrix.platform.release_for }}
+      strategy:
+        matrix:
+          platform:
+            - os: windows-latest
+              target: x86_64-pc-windows-msvc
+              bin: pine_ws.exe
+              name: Windows-x86_64
+              command: build
+            - os: macOS-latest
+              target: x86_64-apple-darwin
+              bin: pine_ws
+              name: macOS-x86_64
+              command: build
+            - os: ubuntu-20.04
+              target: x86_64-unknown-linux-musl
+              bin: pine_ws
+              name: Linux-x86_64
+              command: build
+      runs-on: ${{ matrix.platform.os }}
+      steps:
+        - name: Checkout
+          uses: actions/checkout@v4
+        - name: Get commit hash
+          id: commit
+          run: echo "::set-output name=sha_short::$(git rev-parse --short HEAD)"
+        - name: Build binary
+          uses: houseabsolute/actions-rust-cross@v0
+          with:
+            command: ${{ matrix.platform.command }}
+            target: ${{ matrix.platform.target }}
+            args: "--release"
+            strip: true
+        - name: Upload artifact
+          uses: actions/upload-artifact@v4
+          with:
+            name: pine_ws-${{ matrix.platform.name }}-${{ steps.commit.outputs.sha_short }}
+            path: target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }}
