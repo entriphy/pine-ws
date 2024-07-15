@@ -1,9 +1,8 @@
-name: Build
 on: push
 
 jobs:
     build:
-      name: Build ${{ matrix.platform.release_for }}
+      name: Build ${{ matrix.platform.name }}
       strategy:
         matrix:
           platform:
@@ -17,7 +16,12 @@ jobs:
               bin: pine_ws
               name: macOS-x86_64
               command: build
-            - os: ubuntu-20.04
+            - os: macOS-latest
+              target: aarch64-apple-darwin
+              bin: pine_ws
+              name: macOS-aarch64
+              command: build
+            - os: ubuntu-latest
               target: x86_64-unknown-linux-musl
               bin: pine_ws
               name: Linux-x86_64
