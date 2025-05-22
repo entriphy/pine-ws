@@ -3,10 +3,7 @@ use clap::Parser;
 use pine_ipc::*;
 use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{base64::Base64, serde_as};
-use tungstenite::{accept_hdr, handshake::server::{ErrorResponse, Request, Response}, Message};
-mod version {
-    include!(concat!(env!("OUT_DIR"), "/version.rs"));
-}
+use tungstenite::{accept_hdr, handshake::server::{ErrorResponse, Request, Response}, Message, Utf8Bytes};
 
 macro_rules! error_exit {
     ($msg:expr) => {
@@ -25,8 +22,8 @@ struct Args {
     target: String,
 
     /// Target emulator slot
-    #[arg(long, default_value_t = 0)]
-    slot: u16,
+    #[arg(long)]
+    slot: Option<u16>,
 
     /// WebSocket server port
     #[arg(long, default_value_t = 58021)]
@@ -34,21 +31,15 @@ struct Args {
 }
 
 fn main() {
-    println!("pine-ws (commit {})", version::short_sha());
-
     // Parse args
     let args = Args::parse();
-    let slot = match args.slot {
-        0 => None,
-        x => Some(x)
-    };
 
     // Connect to PINE and verify connection
     let pine_connect = match args.target.as_str() {
-        "pcsx2" => PINE::connect_pcsx2(slot),
-        "rpcs3" => PINE::connect_rpcs3(slot),
-        "duckstation" => PINE::connect_duckstation(slot),
-        _ => PINE::connect(args.target.as_str(), match slot { Some(x) => x, None => error_exit!("Slot must be specified")}, false)
+        "pcsx2" => PINE::connect("pcsx2", args.slot.unwrap_or(28011), args.slot.is_none()),
+        "rpcs3" => PINE::connect("rpcs3", args.slot.unwrap_or(28012), args.slot.is_none()),
+        "duckstation" => PINE::connect("duckstation", args.slot.unwrap_or(28011), args.slot.is_none()),
+        _ => PINE::connect(args.target.as_str(), match args.slot { Some(x) => x, None => error_exit!("Slot must be specified")}, false)
     };
     let mut pine = match pine_connect {
         Ok(x) => x,
@@ -59,10 +50,7 @@ fn main() {
         batch.add(PINECommand::MsgStatus);
         match pine.send(&mut batch) {
             Err(err) => error_exit!("Failed to send message to PINE: {err}"),
-            Ok(res) => match res {
-                PINEResult::Fail => error_exit!("PINE returned error code when sending message"),
-                PINEResult::Ok(_) => println!("Connected to PINE"),
-            },
+            Ok(_) => println!("Connected to PINE"),
         }
     }
     let arc = Arc::new(Mutex::new(pine));
@@ -98,7 +86,7 @@ fn main() {
 
                 let res = match msg {
                     Message::Text(text) => {
-                        Message::Text(match serde_json::from_str::<WSRequest>(&text) {
+                        Message::Text(Utf8Bytes::from(match serde_json::from_str::<WSRequest>(&text) {
                             Err(err) => format!("Failed to parse command: {err}"),
                             Ok(req) => match req {
                                 WSRequest::ExecuteCommand { cmd } => {
@@ -108,10 +96,7 @@ fn main() {
                                     let mut pine = clone.lock().unwrap();
                                     match pine.send(&mut pine_batch) {
                                         Err(err) => serde_json::to_string(&WSErrorResponse { error: format!("Failed to send command: {err}") }).unwrap(),
-                                        Ok(res) => match res {
-                                            PINEResult::Fail => serde_json::to_string(&WSErrorResponse { error: format!("Command returned failure code") }).unwrap(),
-                                            PINEResult::Ok(mut res) => serde_json::to_string(&WSResponse { res: res.pop().unwrap() }).unwrap(),
-                                        },
+                                        Ok(mut res) => serde_json::to_string(&WSResponse { res: res.pop().unwrap() }).unwrap(),
                                     }
                                 }
 
@@ -122,10 +107,7 @@ fn main() {
                                     let res = pine.send(&mut pine_batch);
                                     match res {
                                         Err(err) => serde_json::to_string(&WSErrorResponse { error: format!("Failed to send command: {err}") }).unwrap(),
-                                        Ok(res) => match res {
-                                            PINEResult::Fail => serde_json::to_string(&WSErrorResponse { error: format!("Command returned failure code") }).unwrap(),
-                                            PINEResult::Ok(res) => serde_json::to_string(&WSBatchResponse { res: res}).unwrap(),
-                                        },
+                                        Ok(res) => serde_json::to_string(&WSBatchResponse { res: res}).unwrap(),
                                     }
                                 }
 
@@ -144,14 +126,11 @@ fn main() {
                                     let res = pine.send(&mut batch);
                                     match res {
                                         Err(err) => serde_json::to_string(&WSErrorResponse { error: format!("Failed to send command: {err}") }).unwrap(),
-                                        Ok(res) => match res {
-                                            PINEResult::Fail => serde_json::to_string(&WSErrorResponse { error: format!("Command returned failure code") }).unwrap(),
-                                            PINEResult::Ok(res) => serde_json::to_string(&WSBatchResponse { res: res }).unwrap(),
-                                        },
+                                        Ok(res) => serde_json::to_string(&WSBatchResponse { res: res }).unwrap(),
                                     }
                                 }
                             },
-                        })
+                        }))
                     },
 
                     // TODO: implement this
